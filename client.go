@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/url"
 	"strings"
 	"sync"
@@ -320,6 +321,14 @@ func (c *httpClient) Do(req *http.Request) (*http.Response, error) {
 	req.Header[http.HeaderOrderKey] = allToLower(req.Header[http.HeaderOrderKey])
 	c.headerLck.Unlock()
 
+	var backup []byte
+	if c.config.retry {
+		if req.Body != nil {
+			backup, _ = io.ReadAll(req.Body)
+			req.Body = ioutil.NopCloser(bytes.NewReader(backup))
+		}
+	}
+
 	if c.config.debug {
 		debugReq := req.Clone(context.Background())
 
@@ -348,9 +357,23 @@ func (c *httpClient) Do(req *http.Request) (*http.Response, error) {
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		if c.config.retry && shouldRetry(err, resp) {
+			for i := 0; i < 5; i++ {
+				if req.Body != nil {
+					req.Body = ioutil.NopCloser(bytes.NewReader(backup))
+				}
+				resp, err = c.Client.Do(req)
+				if !shouldRetry(err, resp) {
+					goto out
+				}
+
+				time.Sleep(c.config.retryWait)
+			}
+		}
 		c.logger.Debug("failed to do request: %s", err.Error())
 		return nil, err
 	}
+out:
 
 	c.logger.Debug("headers on request:\n%v", req.Header)
 	c.logger.Debug("cookies on request:\n%v", resp.Request.Cookies())
@@ -384,6 +407,18 @@ func (c *httpClient) Do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+func shouldRetry(err error, resp *http.Response) bool {
+	if err != nil {
+		return true
+	}
+
+	if resp.StatusCode == http.StatusBadGateway ||
+		resp.StatusCode == http.StatusServiceUnavailable ||
+		resp.StatusCode == http.StatusGatewayTimeout {
+		return true
+	}
+	return false
+}
 func (c *httpClient) Get(url string) (resp *http.Response, err error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

@@ -52,6 +52,8 @@ type httpClientConfig struct {
 	serverNameOverwrite         string
 	clientProfile               profiles.ClientProfile
 	timeout                     time.Duration
+	retry                       bool
+	retryWait                   time.Duration
 	catchPanics                 bool
 	debug                       bool
 	followRedirects             bool
